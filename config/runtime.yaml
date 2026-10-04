@@ -1,0 +1,14 @@
+schema_version: 1
+
+daily_refresh:
+  enabled: true
+  time: "06:00"
+  timezone: Europe/Moscow
+
+portfolio_refresh:
+  initial_history_days: 90
+  forecast_horizon_days: 365
+
+fx:
+  # Covers long official holidays, including the New Year break.
+  historical_rate_max_age_calendar_days: 14

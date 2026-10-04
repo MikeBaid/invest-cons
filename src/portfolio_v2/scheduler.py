@@ -6,12 +6,11 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
-from pathlib import Path
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-import yaml
-
-from .service import PortfolioService
+if TYPE_CHECKING:
+    from .service import PortfolioService
 
 
 logger = logging.getLogger(__name__)
@@ -22,20 +21,6 @@ class DailyRefreshSchedule:
     enabled: bool
     run_at: time
     timezone: ZoneInfo
-
-    @classmethod
-    def load(cls, path: Path) -> "DailyRefreshSchedule":
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        config = data.get("daily_refresh", {})
-        run_at = time.fromisoformat(str(config.get("time", "06:00")))
-        if run_at.tzinfo is not None:
-            raise ValueError("daily_refresh.time must be a local wall-clock time")
-        return cls(
-            enabled=bool(config.get("enabled", False)),
-            run_at=run_at,
-            timezone=ZoneInfo(str(config.get("timezone", "Europe/Moscow"))),
-        )
-
 
 def next_run_at(now: datetime, schedule: DailyRefreshSchedule) -> datetime:
     local_now = now.astimezone(schedule.timezone)

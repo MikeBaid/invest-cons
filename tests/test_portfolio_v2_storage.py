@@ -42,7 +42,9 @@ def test_local_postgres_snapshot_roundtrip() -> None:
             assert rows[0].accounts == snapshot.accounts
             assert rows[0].account_errors == snapshot.account_errors
             assert rows[0].positions[0].value_usd == Decimal("1.25")
-            service = PortfolioService(store, None, None)
+            service = PortfolioService(
+                store, None, None, historical_fx_max_age_calendar_days=14,
+            )
             assert await service.portfolio() is not None
             assert (await service.performance()).latest is not None
             data = await service.income()

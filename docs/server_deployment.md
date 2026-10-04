@@ -32,7 +32,7 @@ DigitalOcean стоит выбирать ради более простого п
 ## 2. Что уже умеет проект и что нужно учесть
 
 - `run_portfolio_v2.py` запускает либо один refresh (`--refresh-once`), либо Telegram polling и встроенное ежедневное расписание. Для постоянной работы нужен ровно один systemd-процесс бота.
-- В `config/scheduling.yaml` настраивается ежедневный запуск (сейчас 06:00 `Europe/Moscow`). Отдельный cron для refresh не нужен.
+- В `config/runtime.yaml` настраиваются ежедневный запуск (сейчас 06:00 `Europe/Moscow`), окно первой загрузки операций, горизонт прогноза и допустимая давность исторического FX. Отдельный cron для refresh не нужен.
 - PostgreSQL 16 запускается через Compose. Схема `portfolio_v2` пока создаётся idempotent DDL из кода при старте, а не версионированными миграциями. Перед первым запуском новой версии на боевой БД требуется backup.
 - История старого проекта в эту БД автоматически не попадёт. Переносить нужно backup именно базы `invest_cons`, а не базу старого бота.
 - На Telegram token может работать только один polling-процесс. Локальный бот надо остановить перед запуском серверного.
@@ -301,23 +301,36 @@ sudo -u invest-cons /opt/invest_cons/.venv/bin/pip check
 
 #### 3.4. Разместить TLS-сертификаты, только если они нужны
 
-Не копировать Windows `data/certs` целиком: `tinvest_grpc_roots_bundle.pem` — локально генерируемый объединённый bundle и не должен попадать в Git. Если локальный запуск требует `TINVEST_GRPC_EXTRA_ROOT_CERTS`, определить именно исходные проверенные CA-сертификаты и передать только их. Проверьте локально, какой исходный CA используется в `.env`, не присылая его содержимое в чат.
+Не копировать Windows `data/certs` целиком: `tinvest_grpc_roots_bundle.pem` — локально генерируемый bundle, он не должен попадать в Git. Если T-Invest TLS требует российские CA, используйте проверенные `Russian Trusted Root CA` и соответствующий ему `Russian Trusted Sub CA`; одного root может быть недостаточно, если сервер не передаёт intermediate. Получать сертификаты с официального источника и проверять их цепочку/сроки до установки.
 
-С локального компьютера по SSH, только если дополнительный корень действительно нужен:
+Передать оба исходных `.cer` на сервер по SSH, затем на сервере преобразовать DER в PEM. Если `openssl x509 -inform DER` не распознаёт формат, повторить преобразование без `-inform DER`:
 
 ```bash
-scp -i KEY_PATH /путь/к/исходному-root-ca.pem deployadmin@64.225.103.14:/tmp/verified-root-ca.pem
+# Локальный Git Bash (пути заменить фактическими)
+scp -i KEY_PATH /путь/russian_trusted_root_ca.cer /путь/russian_trusted_sub_ca_2024.cer deployadmin@64.225.103.14:/tmp/
 ```
 
-На сервере установить его с правом чтения для группы приложения:
-
 ```bash
+# VPS
+openssl x509 -inform DER -in /tmp/russian_trusted_root_ca.cer -out /tmp/russian-root.pem
+openssl x509 -inform DER -in /tmp/russian_trusted_sub_ca_2024.cer -out /tmp/russian-sub.pem
+openssl x509 -in /tmp/russian-root.pem -noout -subject -issuer -dates
+openssl x509 -in /tmp/russian-sub.pem -noout -subject -issuer -dates
+openssl verify -CAfile /tmp/russian-root.pem /tmp/russian-sub.pem
 sudo install -d -o root -g invest-cons -m 0750 /etc/invest-cons/certs
-sudo install -o root -g invest-cons -m 0640 /tmp/verified-root-ca.pem /etc/invest-cons/certs/verified-root-ca.pem
-sudo rm -f /tmp/verified-root-ca.pem
+sudo install -o root -g invest-cons -m 0640 /tmp/russian-root.pem /etc/invest-cons/certs/russian-root.pem
+sudo install -o root -g invest-cons -m 0640 /tmp/russian-sub.pem /etc/invest-cons/certs/russian-sub.pem
+sudo rm -f /tmp/russian_trusted_root_ca.cer /tmp/russian_trusted_sub_ca_2024.cer /tmp/russian-root.pem /tmp/russian-sub.pem
 ```
 
-Тогда в env задать `TINVEST_GRPC_EXTRA_ROOT_CERTS=/etc/invest-cons/certs/verified-root-ca.pem` и `TINVEST_GRPC_ROOTS_BUNDLE_PATH=/var/lib/invest-cons/tinvest_grpc_roots_bundle.pem`. Если дополнительных корней в локальной конфигурации нет, обе переменные оставить незаданными. Не устанавливать CA в системное хранилище ради приложения: проект формирует отдельный gRPC bundle.
+`openssl verify` должен показать `OK`. В `/etc/invest-cons/invest-cons.env` задать обе PEM-пути через запятую и отдельный путь для генерируемого bundle:
+
+```dotenv
+TINVEST_GRPC_EXTRA_ROOT_CERTS=/etc/invest-cons/certs/russian-root.pem,/etc/invest-cons/certs/russian-sub.pem
+TINVEST_GRPC_ROOTS_BUNDLE_PATH=/var/lib/invest-cons/tinvest_grpc_roots_bundle.pem
+```
+
+Приложение объединит эти сертификаты с `certifi` roots только для своего gRPC-процесса. Не устанавливать их в системное хранилище ради приложения. Если T-Invest TLS работает без дополнительного доверия, обе переменные оставить незаданными.
 
 #### 3.5. Создать защищённый environment file
 

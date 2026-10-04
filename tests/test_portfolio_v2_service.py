@@ -44,7 +44,8 @@ class FakeStore:
 def test_performance_is_gated_by_operation_coverage() -> None:
     latest = _snapshot(NOW, 130)
     first = _snapshot(NOW - timedelta(days=10), 100)
-    service = PortfolioService(FakeStore([latest, first], False), None, None)
+    service = PortfolioService(FakeStore([latest, first], False), None, None,
+                               historical_fx_max_age_calendar_days=14)
     result = asyncio.run(service.performance())
     assert result.rub is None and result.usd is None
     assert "потоки" in result.reason.lower()
@@ -53,7 +54,8 @@ def test_performance_is_gated_by_operation_coverage() -> None:
 def test_performance_has_separate_rub_and_usd_ledger_views() -> None:
     latest = _snapshot(NOW, 130)
     first = _snapshot(NOW - timedelta(days=10), 100)
-    service = PortfolioService(FakeStore([latest, first], True), None, None)
+    service = PortfolioService(FakeStore([latest, first], True), None, None,
+                               historical_fx_max_age_calendar_days=14)
     result = asyncio.run(service.performance())
     assert result.rub and result.rub.pnl == Decimal("10")
     assert result.usd and result.usd.pnl == Decimal("0.125")
@@ -62,7 +64,8 @@ def test_performance_has_separate_rub_and_usd_ledger_views() -> None:
 def test_latest_partial_snapshot_is_not_silently_skipped() -> None:
     latest = _snapshot(NOW, 0, errors=["freedom:unavailable"])
     first = _snapshot(NOW - timedelta(days=10), 100)
-    service = PortfolioService(FakeStore([latest, first], True), None, None)
+    service = PortfolioService(FakeStore([latest, first], True), None, None,
+                               historical_fx_max_age_calendar_days=14)
     result = asyncio.run(service.performance())
     assert result.rub is None
     assert result.reason == "Последний снимок неполный"
@@ -83,7 +86,8 @@ def test_broker_scope_survives_other_broker_failure() -> None:
 
     latest = snapshot(NOW, 110, failed=True)
     first = snapshot(NOW - timedelta(days=10), 100, failed=False)
-    service = PortfolioService(FakeStore([latest, first], True), None, None)
+    service = PortfolioService(FakeStore([latest, first], True), None, None,
+                               historical_fx_max_age_calendar_days=14)
     combined = asyncio.run(service.performance())
     scoped = asyncio.run(service.performance(broker="freedom"))
     assert combined.rub is None
@@ -136,6 +140,7 @@ def test_income_coverage_is_checked_as_of_the_saved_snapshot() -> None:
     store = IncomeStore()
     service = PortfolioService(
         store, None, None,
+        historical_fx_max_age_calendar_days=14,
         ips_path=Path(__file__).resolve().parents[1] / "config/ips/personal_main.draft.yaml",
     )
     report_now = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)

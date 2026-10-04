@@ -17,7 +17,8 @@ from src.portfolio_v2.adapters import FreedomAdapter, TInvestAdapter
 from src.portfolio_v2.bot import PortfolioBot
 from src.portfolio_v2.service import PortfolioService
 from src.portfolio_v2.policy import InvestmentScopePolicy
-from src.portfolio_v2.scheduler import DailyRefreshSchedule, run_daily_refresh
+from src.portfolio_v2.scheduler import run_daily_refresh
+from src.portfolio_v2.runtime_config import RuntimeConfig
 from src.portfolio_v2.storage import Store
 from src.tinvest_certificates import try_configure_tinvest_grpc_ssl_roots
 
@@ -62,7 +63,8 @@ async def main() -> None:
     allowed = {int(value) for value in _list(os.getenv("PORTFOLIO_V2_TELEGRAM_IDS", ""))}
     if not args.refresh_once and (not token or not allowed):
         raise ValueError("PORTFOLIO_V2_TELEGRAM_TOKEN and PORTFOLIO_V2_TELEGRAM_IDS are required")
-    schedule = DailyRefreshSchedule.load(ROOT / "config/scheduling.yaml")
+    runtime = RuntimeConfig.load(ROOT / "config/runtime.yaml")
+    schedule = runtime.schedule
     store = await Store.connect(dsn)
     try:
         await store.initialize()
@@ -82,6 +84,9 @@ async def main() -> None:
             store, tinkoff, freedom, scope_policy=policy,
             ips_path=ROOT / "config/ips/personal_main.draft.yaml",
             calendar_timezone=schedule.timezone,
+            initial_history_days=runtime.initial_history_days,
+            forecast_horizon_days=runtime.forecast_horizon_days,
+            historical_fx_max_age_calendar_days=runtime.historical_fx_max_age_calendar_days,
         )
         if args.refresh_once:
             result = await service.refresh()

@@ -89,6 +89,26 @@ def test_cbr_nominal_and_date() -> None:
            b'<Valute><CharCode>USD</CharCode><Nominal>1</Nominal><Value>80,50</Value></Valute>'
            b'<Valute><CharCode>CNY</CharCode><Nominal>10</Nominal><Value>110,00</Value></Valute>'
            b'</ValCurs>')
-    fixing = parse_cbr_daily(xml, NOW.date())
+    fixing = parse_cbr_daily(xml, NOW.date(), max_age_calendar_days=14)
     assert fixing.rub_per_currency["CNY"] == Decimal("11")
     assert fixing.convert(Decimal("10"), "CNY", "USD") == Decimal("110") / Decimal("80.50")
+
+
+def test_cbr_accepts_valid_fixing_across_new_year_holiday_gap() -> None:
+    xml = (b'<ValCurs Date="31.12.2025">'
+           b'<Valute><CharCode>USD</CharCode><Nominal>1</Nominal><Value>78,00</Value></Valute>'
+           b'</ValCurs>')
+    fixing = parse_cbr_daily(xml, datetime(2026, 1, 9).date(), max_age_calendar_days=14)
+    assert fixing.rate_date.date().isoformat() == "2025-12-31"
+
+
+def test_cbr_rejects_fixing_older_than_configured_age() -> None:
+    xml = (b'<ValCurs Date="31.12.2025">'
+           b'<Valute><CharCode>USD</CharCode><Nominal>1</Nominal><Value>78,00</Value></Valute>'
+           b'</ValCurs>')
+    try:
+        parse_cbr_daily(xml, datetime(2026, 1, 15).date(), max_age_calendar_days=14)
+    except ValueError as exc:
+        assert "unsuitable" in str(exc)
+    else:
+        raise AssertionError("stale CBR fixing must be rejected")

@@ -11,12 +11,17 @@ import httpx
 from .domain import FxFixing
 
 
-def parse_cbr_daily(xml: bytes, requested: date) -> FxFixing:
+def parse_cbr_daily(
+    xml: bytes,
+    requested: date,
+    *,
+    max_age_calendar_days: int,
+) -> FxFixing:
     root = ElementTree.fromstring(xml)
     if root.tag != "ValCurs":
         raise ValueError("Unexpected CBR XML root")
     source_date = datetime.strptime(root.attrib["Date"], "%d.%m.%Y").date()
-    if source_date > requested or (requested - source_date).days > 7:
+    if source_date > requested or (requested - source_date).days > max_age_calendar_days:
         raise ValueError(f"CBR rate date {source_date} is unsuitable for {requested}")
     rates: dict[str, Decimal] = {"RUB": Decimal("1")}
     for row in root.findall("Valute"):
@@ -36,11 +41,13 @@ def parse_cbr_daily(xml: bytes, requested: date) -> FxFixing:
     )
 
 
-async def fetch_cbr_daily(day: date) -> FxFixing:
+async def fetch_cbr_daily(day: date, *, max_age_calendar_days: int) -> FxFixing:
     async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
         response = await client.get(
             "https://www.cbr.ru/scripts/XML_daily.asp",
             params={"date_req": day.strftime("%d/%m/%Y")},
         )
         response.raise_for_status()
-        return parse_cbr_daily(response.content, day)
+        return parse_cbr_daily(
+            response.content, day, max_age_calendar_days=max_age_calendar_days,
+        )

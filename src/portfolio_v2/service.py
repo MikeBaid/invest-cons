@@ -78,12 +78,16 @@ class PerformanceResult:
 class PortfolioService:
     def __init__(self, store: Store, tinkoff: TInvestAdapter,
                  freedom: FreedomAdapter, *, initial_history_days: int = 90,
+                 forecast_horizon_days: int = 365,
+                 historical_fx_max_age_calendar_days: int,
                  scope_policy: InvestmentScopePolicy | None = None,
                  ips_path: Path | None = None,
                  calendar_timezone: tzinfo | None = None):
         self.store = store
         self.adapters = (tinkoff, freedom)
         self.initial_history_days = initial_history_days
+        self.forecast_horizon_days = forecast_horizon_days
+        self.historical_fx_max_age_calendar_days = historical_fx_max_age_calendar_days
         self.scope_policy = scope_policy
         self.ips_path = ips_path
         self.calendar_timezone = calendar_timezone or ZoneInfo("Europe/Moscow")
@@ -98,7 +102,9 @@ class PortfolioService:
         if cached is not None:
             self._fx_cache[day] = cached
             return cached
-        fixing = await fetch_cbr_daily(day)
+        fixing = await fetch_cbr_daily(
+            day, max_age_calendar_days=self.historical_fx_max_age_calendar_days,
+        )
         await self.store.save_fx(day, fixing)
         self._fx_cache[day] = fixing
         return fixing
@@ -195,7 +201,7 @@ class PortfolioService:
                     await self.store.save_sync_error(key, error_code)
                     operation_status[key] = f"error:{error_code}"
 
-            horizon = now + timedelta(days=365)
+            horizon = now + timedelta(days=self.forecast_horizon_days)
             for adapter, handle in discovered:
                 key = handle.account.key
                 if key in position_failed:

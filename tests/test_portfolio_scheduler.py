@@ -3,13 +3,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from src.portfolio_v2.scheduler import DailyRefreshSchedule, next_run_at
+from src.portfolio_v2.runtime_config import RuntimeConfig
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_daily_refresh_schedule_loads_moscow_time_from_config() -> None:
-    schedule = DailyRefreshSchedule.load(ROOT / "config/scheduling.yaml")
+    schedule = RuntimeConfig.load(ROOT / "config/runtime.yaml").schedule
 
     assert schedule.enabled
     assert schedule.run_at == time(6, 0)
