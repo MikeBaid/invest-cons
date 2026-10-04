@@ -1,0 +1,109 @@
+# Только предложения для одноразовой сверки; не является действующей классификацией.
+asset_class_by_position_kind:
+  bond: bonds
+  equity: equities
+  cash: liquidity
+manual_instrument_facts:
+  bf46ec45-4391-4a76-bbc2-feb7a62a8a3a:
+    nominal_currency: RUB
+    currency_link: RUB
+    floating_coupon_flag: true
+  1862f617-1f73-44ad-9792-045bef0301ee:
+    nominal_currency: RUB
+    currency_link: RUB
+    floating_coupon_flag: true
+  0ec36207-9c40-42fa-bc97-73b083712cdc:
+    nominal_currency: RUB
+    currency_link: RUB
+    floating_coupon_flag: true
+  a0edbf17-924d-4ce4-a758-1a35a9f65548:
+    nominal_currency: RUB
+    currency_link: RUB
+    floating_coupon_flag: true
+rules:
+  - kind: cash
+    contour: rf
+    candidate_bucket: rf.liquidity.cash
+    status: confirmed
+    reason: Денежная позиция брокера; контур взят со счета
+  - kind: cash
+    contour: external
+    candidate_bucket: external.liquidity.cash
+    status: confirmed
+    reason: Денежная позиция брокера; контур взят со счета
+  - kind: equity
+    contour: rf
+    legacy_bucket_prefix: equities.ru_
+    candidate_bucket: rf.equities
+    status: confirmed
+    reason: Пользователь подтвердил перенос старых российских equity-бакетов
+  - kind: bond
+    contour: rf
+    instrument_id: 6966a3ae-5d0c-4e01-8640-cd926d8bf1c0
+    currency_link: USD
+    candidate_bucket: rf.bonds.usd_linked
+    status: confirmed
+    reason: Пользователь вручную отнес выпуск Металлоинвест 002P-02 к rf.bonds.usd_linked
+  - kind: bond
+    contour: rf
+    legacy_bucket_exact: currency_corp_bonds.replacement_bonds_usd
+    currency_link: USD
+    candidate_bucket: rf.bonds.usd_linked
+    status: confirmed
+    reason: Российская USD-linked replacement bond; целевой бакет определяется валютной привязкой
+  - kind: bond
+    contour: rf
+    legacy_bucket_exact: currency_corp_bonds.cny_bonds
+    currency_link: CNY
+    candidate_bucket: rf.bonds.cny_linked
+    status: confirmed
+    reason: CNY-linked облигации относятся к отдельному CNY-листу; рейтинг не используется
+  - kind: bond
+    contour: rf
+    legacy_bucket_exact: rub_corp_bonds.rating_AA_plus
+    require_floating_coupon_flag: true
+    currency_link: RUB
+    candidate_bucket: rf.bonds.rub_floater
+    status: confirmed
+    reason: Рублёвый флоатер; все рейтинговые категории объединены
+  - kind: bond
+    contour: rf
+    legacy_bucket_exact: rub_corp_bonds.rating_A_to_AA
+    require_floating_coupon_flag: true
+    currency_link: RUB
+    candidate_bucket: rf.bonds.rub_floater
+    status: confirmed
+    reason: Рублёвый флоатер; все рейтинговые категории объединены
+  - kind: bond
+    contour: rf
+    legacy_bucket_exact: rub_corp_bonds.rating_AA_plus
+    require_floating_coupon_flag: false
+    currency_link: RUB
+    candidate_bucket: rf.bonds.rub_fixed
+    status: confirmed
+    reason: Рублёвая облигация без плавающего купона; рейтинговое деление убрано
+  - kind: bond
+    contour: rf
+    legacy_bucket_exact: rub_corp_bonds.rating_A_to_AA
+    require_floating_coupon_flag: false
+    currency_link: RUB
+    candidate_bucket: rf.bonds.rub_fixed
+    status: confirmed
+    reason: Рублёвая облигация без плавающего купона; рейтинговое деление убрано
+  - kind: bond
+    contour: rf
+    legacy_bucket_exact: rub_corp_bonds.rating_AA_plus
+    status: needs_instrument_facts
+    reason: T-Invest не вернул тип купона; для выбора RUB-листа нужны данные об условиях выпуска
+  - kind: bond
+    contour: rf
+    legacy_bucket_exact: rub_corp_bonds.rating_A_to_AA
+    status: needs_instrument_facts
+    reason: T-Invest не вернул тип купона; для выбора RUB-листа нужны данные об условиях выпуска
+  - kind: bond
+    contour: external
+    legacy_bucket_exact: currency_corp_bonds.replacement_bonds_usd
+    currency_link_from_price_currency: true
+    candidate_bucket: external.bonds.kz_fx
+    status: confirmed
+    reason: KZ FX bonds; валюта выпуска определяется по данным позиции T-Invest/Freedom

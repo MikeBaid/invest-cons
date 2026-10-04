@@ -1,0 +1,34 @@
+# Подтвержденное пользователем исключение из инвестиционного NAV и доходности.
+# Исходные брокерские позиции/операции остаются в PostgreSQL без изменений.
+version: 2026-10-04-non-tradeable-v1
+source: legacy_asset_bucket_mapping_non_tradeable
+excluded_account_keys:
+  - tinkoff:2035801725 # инвесткопилка
+  - tinkoff:2282953975 # счет под ключ
+  - tinkoff:2305872178 # инвесткопилка
+  - tinkoff:2305872269 # счет под ключ
+# Счет «Портфельное инвестирование» остается в personal_main по решению пользователя.
+instruments:
+  - {uid: 083953bd-7fcd-4023-bf81-7d53b5c66e3c, legacy_key: TCS10A102EQ8}
+  - {uid: 0dafc88c-f96b-4fc4-8b79-b8fad9e94476, legacy_key: TCS10A103VF3}
+  - {uid: 0e2202cf-6edd-41b7-a1fb-3f1ca9c0812f, legacy_key: TCSB07673065}
+  - {uid: 1066670a-12c8-4858-aea9-423a69d8fd35, legacy_key: TCS10A102EM7}
+  - {uid: 237fe4dc-0aa6-45cb-8c02-ed2e9c31d04c, legacy_key: TCS00A1071G8}
+  - {uid: 24a35b51-e5de-4f49-b411-eee6569b07d1, legacy_key: BBG000HWNSD9}
+  - {uid: 34613b46-a103-468f-b158-3a6b13d21b2c, legacy_key: BBG001QVTV19}
+  - {uid: 3ec15b8e-0b9f-41f4-8008-33e6b1fc4fd0, legacy_key: TCS10A103VN7}
+  - {uid: 4c2066ba-b85e-4b38-8973-8b46eb8caf87, legacy_key: TCSS0A103VG1}
+  - {uid: 4f358064-6c73-4002-b787-ae6de05288bb, legacy_key: TCSS0A103VH9}
+  - {uid: 72eb80d9-ffe3-4374-b9f8-aba2e1dc8c34, legacy_key: TCS10A103VK3}
+  - {uid: 76d0e08c-509b-4c06-a339-57d341d198f2, legacy_key: TCS10A101X68}
+  - {uid: 870ea472-db8b-4bca-94a9-b254d64fbd53, legacy_key: TCS10A103VL1}
+  - {uid: 8879878b-3fb6-4ca2-a449-9dd4d30a440e, legacy_key: TCS00A109JM1}
+  - {uid: a9d62017-9c3c-49e9-b836-427859a178c1, legacy_key: TCS00A1071D5}
+  - {uid: af5fccaa-15c4-4684-83c8-70a54a291fd0, legacy_key: TCS00A1071F0}
+  - {uid: bc6e8457-4a7e-42f1-b257-ea0d8ec6d2e8, legacy_key: TCS10A103VJ5}
+  - {uid: db7c231b-a361-4187-91b5-21ab57f85f1f, legacy_key: TCS10A102EK1}
+  - {uid: df64aed6-8326-418d-946a-23049d8ff483, legacy_key: US46138E8003}
+  - {uid: feac3792-01de-4968-95b0-8d3fd87f881a, legacy_key: TCS00A1071E3}
+  - {uid: 5ca45ba4-11f2-4ac2-9747-5291499ccc90, legacy_key: TCS97A102EK1}
+  - {uid: 9cd6ebd3-76d2-4e0c-8413-19052c74e757, legacy_key: TCS97A102EQ8}
+  - {uid: b11a5d7a-1606-48d5-a050-8a644702e745, legacy_key: TCS97A101X68}

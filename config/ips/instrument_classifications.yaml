@@ -1,0 +1,15 @@
+# Ручные решения пользователя. Имеют приоритет над классификацией из preview.
+version: user-confirmed-2026-10-04-v1
+assignments:
+  - contour: external
+    instrument_id: FPSTB5.KZ
+    bucket_id: external.bonds.kz_fx
+    classification_version: user-confirmed-2026-10-04-v1
+    source: user_confirmed_override
+    reason: "По ранее заданному правилу: облигации Freedom относятся к external.bonds.kz_fx."
+  - contour: rf
+    instrument_id: fd6da192-a299-43dc-a6c6-ba99be6079d2
+    bucket_id: rf.bonds.rub_fixed
+    classification_version: user-confirmed-2026-10-04-v1
+    source: user_confirmed_override
+    reason: "По прямому указанию пользователя: отнести NDM к rf.bonds.rub_fixed."

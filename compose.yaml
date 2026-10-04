@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-invest_cons}
+      POSTGRES_USER: ${POSTGRES_USER:-invest_cons}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - invest_cons_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-invest_cons} -d ${POSTGRES_DB:-invest_cons}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  invest_cons_postgres_data:

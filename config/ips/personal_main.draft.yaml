@@ -1,0 +1,192 @@
+# Черновик IPS для обсуждения. Приложение пока не загружает этот файл.
+# Все target выражены долей от полного personal_main, а не от родительского узла.
+# Числа взяты из ранее обсужденных ориентиров. Не активировать без согласования.
+# KZ FX bonds (USD и EUR): включают позиции KZ; целевой ориентир 4%.
+policy_id: personal_main
+version: draft-2026-10-04-v1
+status: draft
+effective_from: null
+scope_id: personal_main
+classification_policy_version: draft-1
+
+objective:
+  metric: terminal_real_wealth
+  success_currency: USD
+  reporting_currencies: [RUB, USD]
+  horizon_years: 4
+  reinvest_income: true
+  return_basis: null            # до/после налогов еще нужно согласовать
+  usd_inflation_series: null    # кандидат: CPI-U, выбор не утвержден
+  external_flow_plan: null
+  ordinary_scenario:
+    statistic: median_annualized_real_return
+    return_measure: geometric_twr
+    minimum: 0.05
+  adverse_scenario:
+    objective: maximize_lower_tail_terminal_real_wealth
+    tail_probability: null
+  drawdown:
+    currency_basis: real_usd
+    value_measure: flow_adjusted_return_index
+    threshold: 0.20
+    maximum_breach_probability: null
+    observation_frequency: null
+
+allocation:
+  weight_basis: total_portfolio
+  tree:
+    id: personal_main
+    target: 1.00
+    children:
+      - id: rf
+        dimension: account_contour
+        value: rf
+        target: 0.60
+        # Обсуждавшийся ориентир 50-75% не утвержден как жесткий min/max.
+        children:
+          - id: rf.bonds
+            dimension: asset_class
+            value: bonds
+            target: 0.43
+            children:
+              - id: rf.bonds.usd_linked
+                label: RU USD-linked bonds
+                match:
+                  issuer_country: RU
+                  currency_link: USD
+                target: 0.21
+              - id: rf.bonds.cny_linked
+                label: RU CNY-linked bonds
+                match:
+                  issuer_country: RU
+                  currency_link: CNY
+                target: 0.09
+              - id: rf.bonds.rub_fixed
+                label: RUB fixed coupon
+                match:
+                  issuer_country: RU
+                  nominal_currency: RUB
+                  currency_link: RUB
+                  coupon_structure: fixed
+                target: 0.10
+              - id: rf.bonds.rub_floater
+                label: RUB floaters
+                match:
+                  issuer_country: RU
+                  nominal_currency: RUB
+                  currency_link: RUB
+                  coupon_structure: floating
+                target: 0.03
+          - id: rf.equities
+            label: Russian equities
+            dimension: asset_class
+            value: equities
+            target: 0.10
+            match:
+              business_region: RU
+          - id: rf.gold
+            label: Gold RU
+            dimension: asset_class
+            value: gold
+            target: 0.07
+            match:
+              custody_contour: rf
+          - id: rf.liquidity
+            dimension: asset_class
+            value: liquidity
+            target: 0.00
+            children:
+              - id: rf.liquidity.cash
+                label: Cash RU
+                match:
+                  liquidity_kind: cash
+                target: 0.00
+          - id: rf.other
+            dimension: asset_class
+            value: other
+            target: 0.00
+            children:
+              - id: rf.other.manual
+                label: Other RU
+                target: 0.00
+
+      - id: external
+        dimension: account_contour
+        value: external
+        target: 0.40
+        # Обсуждавшийся ориентир 25-50% не утвержден как жесткий min/max.
+        children:
+          - id: external.bonds
+            dimension: asset_class
+            value: bonds
+            target: 0.15
+            children:
+              - id: external.bonds.tips
+                label: TIPS
+                match:
+                  issuer_country: US
+                  bond_subtype: tips
+                target: 0.08
+              - id: external.bonds.kz_fx
+                label: KZ FX bonds
+                match:
+                  issuer_country: KZ
+                  currency_link: [USD, EUR]
+                target: 0.04
+              - id: external.bonds.t_bills
+                label: Short-term T-bills
+                match:
+                  issuer_country: US
+                  bond_subtype: t_bill
+                target: 0.03
+          - id: external.equities
+            dimension: asset_class
+            value: equities
+            target: 0.22
+            children:
+              - id: external.equities.us
+                label: US equities
+                match:
+                  business_region: US
+                target: 0.10
+              - id: external.equities.europe
+                label: Europe equities
+                match:
+                  business_region: EUROPE
+                target: 0.05
+              - id: external.equities.em_ex_china
+                label: EM ex-China
+                match:
+                  business_region: EM_EX_CHINA
+                target: 0.05
+              - id: external.equities.china
+                label: China equities
+                match:
+                  business_region: CHINA
+                target: 0.02
+          - id: external.gold
+            label: Gold external
+            dimension: asset_class
+            value: gold
+            target: 0.03
+          - id: external.liquidity
+            dimension: asset_class
+            value: liquidity
+            target: 0.00
+            children:
+              - id: external.liquidity.cash
+                label: Cash external
+                match:
+                  liquidity_kind: cash
+                target: 0.00
+          - id: external.other
+            label: Other external
+            dimension: asset_class
+            value: other
+            target: 0.00
+
+# Численные лимиты на концентрацию и допустимые диапазоны будут согласованы
+# отдельно. Не переносить их автоматически из прежнего IPS.
+concentration_limits:
+  per_issuer: null
+  per_instrument: null

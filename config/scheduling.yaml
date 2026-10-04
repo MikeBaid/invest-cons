@@ -1,0 +1,4 @@
+daily_refresh:
+  enabled: true
+  time: "06:00"
+  timezone: Europe/Moscow

@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+data/certs/
+*.log
+reports/
+*.dump
+*.backup
+*.tar.gz

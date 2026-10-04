@@ -1,0 +1,21 @@
+[Unit]
+Description=One-time Invest Cons portfolio synchronization
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=invest-cons
+Group=invest-cons
+WorkingDirectory=/opt/invest_cons
+EnvironmentFile=/etc/invest-cons/invest-cons.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/invest_cons/.venv/bin/python /opt/invest_cons/run_portfolio_v2.py --refresh-once
+TimeoutStartSec=1800
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/invest_cons
+StateDirectory=invest-cons
