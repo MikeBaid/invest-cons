@@ -84,7 +84,9 @@ def load_allocation_tree(path: Path) -> tuple[AllocationNode, str, str]:
                 f"IPS targets under {node.bucket_id} sum to {children_sum}, "
                 f"expected {node.target_pct}"
             )
-    return root, str(data.get("status", "draft")), str(data.get("version", "unknown"))
+    return root, str(data.get("status", "draft")), str(
+        data.get("classification_policy_version", data.get("version", "unknown"))
+    )
 
 
 def build_portfolio_allocation(

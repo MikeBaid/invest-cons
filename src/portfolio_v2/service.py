@@ -13,7 +13,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from .adapters import FreedomAdapter, Handle, TInvestAdapter
-from .allocation import PortfolioAllocation, build_portfolio_allocation
+from .allocation import AllocationNode, PortfolioAllocation, build_portfolio_allocation, load_allocation_tree
 from .domain import FxFixing, Performance, Snapshot, calculate_performance, value_portfolio
 from .fx import fetch_cbr_daily
 from .income import IncomeReport, build_income_report
@@ -237,6 +237,53 @@ class PortfolioService:
             return None
         assignments = await self.store.active_classifications()
         return build_portfolio_allocation(snapshot, assignments, self.ips_path)
+
+    def classification_tree(self) -> tuple[AllocationNode, str, str]:
+        if self.ips_path is None:
+            raise RuntimeError("IPS path is not configured")
+        return load_allocation_tree(self.ips_path)
+
+    async def classify_instrument(self, contour: str, instrument_id: str,
+                                  bucket_id: str, user_id: int) -> bool:
+        root, _status, version = self.classification_tree()
+        contour_node = next((node for node in root.children if node.bucket_id == contour), None)
+        if contour_node is None:
+            raise ValueError("Unknown account contour")
+
+        def find_leaf(node: AllocationNode, sought_id: str) -> AllocationNode | None:
+            if node.bucket_id == sought_id:
+                return node if not node.children and not node.synthetic else None
+            for child in node.children:
+                found = find_leaf(child, sought_id)
+                if found is not None:
+                    return found
+            return None
+
+        if find_leaf(contour_node, bucket_id) is None:
+            raise ValueError("Bucket must be a leaf of the instrument contour")
+        snapshot = await self.portfolio()
+        if snapshot is None:
+            raise ValueError("No portfolio snapshot")
+        contours = {account.key: account.contour for account in snapshot.accounts}
+        if not any(position.position.instrument_id == instrument_id and
+                   contours.get(position.position.account_key) == contour
+                   for position in snapshot.positions):
+            raise ValueError("Instrument is not in the current portfolio")
+        current = (await self.store.active_classifications()).get((contour, instrument_id))
+        if current and current["bucket_id"] == bucket_id:
+            return False
+        if current and find_leaf(contour_node, current["bucket_id"]) is not None:
+            raise ValueError("Instrument was already classified; reopen the report")
+        changed = await self.store.set_active_classifications([{
+            "contour": contour,
+            "instrument_id": instrument_id,
+            "bucket_id": bucket_id,
+            "classification_version": version,
+            "source": "telegram_manual",
+            "reason": f"telegram_user_id={user_id}",
+            "expected_bucket_id": current["bucket_id"] if current else None,
+        }])
+        return changed > 0
 
     @staticmethod
     def _scope(snapshot: Snapshot, keys: set[str]) -> Snapshot:

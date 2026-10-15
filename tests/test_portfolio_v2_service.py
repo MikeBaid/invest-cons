@@ -1,6 +1,7 @@
 """The application never converts partial broker data into a numeric return."""
 
 import asyncio
+import pytest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -49,6 +50,46 @@ def test_performance_is_gated_by_operation_coverage() -> None:
     result = asyncio.run(service.performance())
     assert result.rub is None and result.usd is None
     assert "потоки" in result.reason.lower()
+
+
+def test_manual_classification_validates_leaf_contour_and_current_position() -> None:
+    class ClassificationStore(FakeStore):
+        def __init__(self):
+            super().__init__([], True)
+            self.rows = {}
+            self.saved = []
+
+        async def active_classifications(self):
+            return self.rows
+
+        async def set_active_classifications(self, rows):
+            self.saved.extend(rows)
+            return len(rows)
+
+    store = ClassificationStore()
+    service = PortfolioService(
+        store, None, None, historical_fx_max_age_calendar_days=14,
+        ips_path=Path(__file__).resolve().parents[1] / "config/ips/personal_main.draft.yaml",
+    )
+    snapshot = value_portfolio(
+        as_of=NOW, accounts=[ACCOUNT],
+        positions=[Position(ACCOUNT.key, "NEW", "New bond", "bond",
+                            Decimal("1"), "RUB", Decimal("100"))], fx=FX,
+    )
+
+    async def portfolio():
+        return snapshot
+
+    service.portfolio = portfolio
+    assert asyncio.run(service.classify_instrument("rf", "NEW", "rf.bonds.rub_fixed", 42))
+    assert store.saved[0]["source"] == "telegram_manual"
+    assert store.saved[0]["classification_version"] == "draft-1"
+    with pytest.raises(ValueError, match="leaf"):
+        asyncio.run(service.classify_instrument("rf", "NEW", "rf.bonds", 42))
+    with pytest.raises(ValueError, match="contour"):
+        asyncio.run(service.classify_instrument("rf", "NEW", "external.bonds.kz_fx", 42))
+    with pytest.raises(ValueError, match="current portfolio"):
+        asyncio.run(service.classify_instrument("rf", "MISSING", "rf.bonds.rub_fixed", 42))
 
 
 def test_performance_has_separate_rub_and_usd_ledger_views() -> None:

@@ -3,8 +3,47 @@ from decimal import Decimal
 
 from src.portfolio_v2.allocation import AllocationNode, PortfolioAllocation, PositionRow
 from src.portfolio_v2.bot import PortfolioBot
+from src.portfolio_v2.allocation import build_portfolio_allocation, load_allocation_tree
+from src.portfolio_v2.bot import ClassificationSession
+from src.portfolio_v2.domain import Snapshot
+from pathlib import Path
 from src.portfolio_v2.domain import Account, Position, ValuedPosition
 from src.portfolio_v2.income import IncomeMoney, IncomeNode, IncomePosition, IncomeReport
+
+
+def test_classification_follows_ips_tree_and_only_confirms_leaf() -> None:
+    ips = Path(__file__).resolve().parents[1] / "config/ips/personal_main.draft.yaml"
+    account = Account("tinkoff", "A", "owner", label="Main")
+    valued = ValuedPosition(
+        Position(account.key, "NEW-BOND", "New bond", "bond", Decimal("1"),
+                 "RUB", Decimal("100")), Decimal("100"), Decimal("1"),
+    )
+    report = build_portfolio_allocation(
+        Snapshot(datetime(2026, 10, 4, tzinfo=timezone.utc), (account,), (valued,)),
+        {}, ips,
+    )
+    candidates = PortfolioBot._unclassified_candidates(report)
+    assert len(candidates) == 1
+    session = ClassificationSession(candidates)
+    bot = object.__new__(PortfolioBot)
+    bot.service = type("Service", (), {"classification_tree": lambda self: load_allocation_tree(ips)})()
+
+    text, keyboard, contour = bot._classification_node(session, "test", 0, "-")
+    assert contour.bucket_id == "rf"
+    assert any(button.text == "bonds" or "bond" in button.text.lower()
+               for row in keyboard.inline_keyboard for button in row)
+    assert "Подтвердить" not in text
+
+    _text, keyboard, parent = bot._classification_node(session, "test", 0, "0")
+    assert parent.bucket_id == "rf.bonds"
+    assert all(button.text != "Подтвердить"
+               for row in keyboard.inline_keyboard for button in row)
+    text, keyboard, leaf = bot._classification_node(session, "test", 0, "0.2")
+    assert leaf.bucket_id == "rf.bonds.rub_fixed"
+    assert "Подтвердить" in text
+    assert keyboard.inline_keyboard[0][0].callback_data == "cl:test:c:0:0.2"
+    assert all(len(button.callback_data) <= 64
+               for row in keyboard.inline_keyboard for button in row)
 
 
 def test_portfolio_keyboard_drills_to_position_and_back() -> None:

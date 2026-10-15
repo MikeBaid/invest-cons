@@ -7,6 +7,7 @@ import logging
 import secrets
 import asyncio
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
@@ -30,8 +31,25 @@ INCOME_METRIC_LABELS = {
 }
 
 
-def _money(value: Decimal | None, currency: str) -> str:
-    return "н/д" if value is None else f"{value:,.2f} {currency}".replace(",", " ")
+@dataclass(frozen=True, slots=True)
+class ClassificationCandidate:
+    contour: str
+    instrument_id: str
+    name: str
+    kind: str
+    account_label: str
+
+
+@dataclass(slots=True)
+class ClassificationSession:
+    candidates: list[ClassificationCandidate]
+
+
+def _money(value: Decimal | None, currency: str, *, blur: bool = False) -> str:
+    if value is None:
+        return "н/д"
+    formatted = f"{value:,.2f} {currency}".replace(",", " ")
+    return f"<tg-spoiler>{formatted}</tg-spoiler>" if blur else formatted
 
 
 def _date(value: datetime | None) -> str:
@@ -53,13 +71,13 @@ def _parts(lines: list[str], *, max_size: int = 3500) -> list[str]:
     return parts
 
 
-def portfolio_lines(snapshot: Snapshot | None) -> list[str]:
+def portfolio_lines(snapshot: Snapshot | None, *, blur_amounts: bool = False) -> list[str]:
     if snapshot is None:
         return ["Срез портфеля пока не загружен. Запустите /refresh."]
     lines = ["<b>Инвестиционный портфель</b>", f"На {_date(snapshot.as_of)}",
              f"Охват: {'полный' if snapshot.complete else 'неполный'}",
-             f"Итого: {_money(snapshot.total('RUB'), 'RUB')} / "
-             f"{_money(snapshot.total('USD'), 'USD')}"]
+             f"Итого: {_money(snapshot.total('RUB'), 'RUB', blur=blur_amounts)} / "
+             f"{_money(snapshot.total('USD'), 'USD', blur=blur_amounts)}"]
     if snapshot.account_errors or snapshot.valuation_errors:
         lines.append("<b>Проблемы данных</b>")
         lines.extend(f"• {html.escape(error)}" for error in
@@ -74,24 +92,31 @@ def portfolio_lines(snapshot: Snapshot | None) -> list[str]:
         lines.append(f"\n<b>{html.escape(account.label or account.key)}</b> "
                      f"({html.escape(account.broker)}, {html.escape(account.owner_id)}, "
                      f"{html.escape(account.kind)})")
-        lines.append(f"Счёт: {_money(rub if complete else None, 'RUB')} / "
-                     f"{_money(usd if complete else None, 'USD')}")
+        lines.append(f"Счёт: {_money(rub if complete else None, 'RUB', blur=blur_amounts)} / "
+                     f"{_money(usd if complete else None, 'USD', blur=blur_amounts)}")
         for valued in sorted(own, key=lambda p: p.position.name):
             p = valued.position
             lines.append(f"• {html.escape(p.name)}: {p.quantity_units} шт.; "
-                         f"{_money(p.value_native, html.escape(p.price_currency))}; "
-                         f"{_money(valued.value_rub, 'RUB')} / "
-                         f"{_money(valued.value_usd, 'USD')}")
+                         f"{_money(p.value_native, html.escape(p.price_currency), blur=blur_amounts)}; "
+                         f"{_money(valued.value_rub, 'RUB', blur=blur_amounts)} / "
+                         f"{_money(valued.value_usd, 'USD', blur=blur_amounts)}")
     return lines
 
 
 class PortfolioBot:
-    def __init__(self, token: str, allowed_user_ids: set[int], service: PortfolioService):
+    def __init__(self, token: str, allowed_user_ids: set[int], service: PortfolioService,
+                 *, blur_amounts: bool = False, classification_enabled: bool = False,
+                 classification_admin_ids: set[int] | None = None):
         self.bot = Bot(token=token)
         self.dispatcher = Dispatcher()
         self.allowed_user_ids = allowed_user_ids
         self.service = service
+        self.blur_amounts = blur_amounts
+        self.classification_enabled = classification_enabled
+        self.classification_admin_ids = classification_admin_ids or set()
         self._allocation_views: dict[str, PortfolioAllocation] = {}
+        self._classification_views: dict[str, ClassificationSession] = {}
+        self._notified_unclassified: set[tuple[str, str]] = set()
         self._income_views: dict[str, IncomeReport] = {}
         self._refresh_tasks: dict[int, asyncio.Task[None]] = {}
         self._register()
@@ -109,6 +134,85 @@ class PortfolioBot:
         return node
 
     @staticmethod
+    def _unclassified_candidates(report: PortfolioAllocation) -> list[ClassificationCandidate]:
+        candidates: dict[tuple[str, str], ClassificationCandidate] = {}
+
+        def visit(node: AllocationNode) -> None:
+            if node.synthetic and node.bucket_id.endswith(".unclassified"):
+                for row in node.positions:
+                    position = row.valued.position
+                    key = (row.account.contour, position.instrument_id)
+                    candidates.setdefault(key, ClassificationCandidate(
+                        row.account.contour, position.instrument_id, position.name,
+                        position.kind, row.account.label or row.account.key,
+                    ))
+            for child in node.children:
+                visit(child)
+
+        visit(report.root)
+        return sorted(candidates.values(), key=lambda item: (item.contour, item.name.casefold()))
+
+    def _new_classification_session(self, candidates: list[ClassificationCandidate]) -> str:
+        token = secrets.token_hex(4)
+        self._classification_views[token] = ClassificationSession(candidates)
+        while len(self._classification_views) > 64:
+            self._classification_views.pop(next(iter(self._classification_views)))
+        return token
+
+    @staticmethod
+    def _classification_page(session: ClassificationSession, token: str, offset: int
+                             ) -> tuple[str, InlineKeyboardMarkup]:
+        rows = [[InlineKeyboardButton(
+            text=f"{item.name} ({item.contour})"[:60],
+            callback_data=f"cl:{token}:n:{index}:-",
+        )] for index, item in enumerate(session.candidates[offset:offset + 20], start=offset)]
+        nav = []
+        if offset:
+            nav.append(InlineKeyboardButton(text="←", callback_data=f"cl:{token}:l:{offset - 20}"))
+        if offset + 20 < len(session.candidates):
+            nav.append(InlineKeyboardButton(text="→", callback_data=f"cl:{token}:l:{offset + 20}"))
+        if nav:
+            rows.append(nav)
+        return (f"<b>Без классификации: {len(session.candidates)}</b>\n"
+                "Выберите инструмент.", InlineKeyboardMarkup(inline_keyboard=rows))
+
+    def _classification_node(self, session: ClassificationSession, token: str,
+                             index: int, path: str
+                             ) -> tuple[str, InlineKeyboardMarkup, AllocationNode]:
+        candidate = session.candidates[index]
+        root, _status, _version = self.service.classification_tree()
+        contour_node = next((child for child in root.children
+                             if child.bucket_id == candidate.contour), None)
+        if contour_node is None:
+            raise ValueError("Contour is absent from the IPS")
+        node = self._node_at_path(contour_node, "" if path == "-" else path)
+        lines = [f"<b>{html.escape(candidate.name)}</b>",
+                 f"Контур: {html.escape(candidate.contour)}; "
+                 f"тип: {html.escape(candidate.kind)}",
+                 f"Счёт: {html.escape(candidate.account_label)}",
+                 f"Бакет: <code>{html.escape(node.bucket_id)}</code>"]
+        rows: list[list[InlineKeyboardButton]] = []
+        if node.children:
+            lines.append("Выберите следующий уровень IPS:")
+            for child_index, child in enumerate(node.children):
+                child_path = str(child_index) if path == "-" else f"{path}.{child_index}"
+                rows.append([InlineKeyboardButton(
+                    text=child.label[:60], callback_data=f"cl:{token}:n:{index}:{child_path}",
+                )])
+        else:
+            lines.append("Подтвердить назначение листового бакета?")
+            rows.append([InlineKeyboardButton(
+                text="Подтвердить", callback_data=f"cl:{token}:c:{index}:{path}",
+            )])
+        previous = "-" if path == "-" or "." not in path else path.rpartition(".")[0]
+        rows.append([InlineKeyboardButton(
+            text="← Назад" if path != "-" else "← К инструментам",
+            callback_data=(f"cl:{token}:n:{index}:{previous}" if path != "-"
+                           else f"cl:{token}:l:0"),
+        )])
+        return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows), node
+
+    @staticmethod
     def _income_node_at_path(root: IncomeNode, path: str) -> IncomeNode:
         node = root
         if path:
@@ -118,14 +222,16 @@ class PortfolioBot:
 
     @staticmethod
     def _allocation_keyboard(report: PortfolioAllocation, token: str,
-                             node: AllocationNode, path: str = "", page: int = 0
+                             node: AllocationNode, path: str = "", page: int = 0,
+                             blur_amounts: bool = False,
                              ) -> InlineKeyboardMarkup:
         rows: list[list[InlineKeyboardButton]] = []
         if node.children:
             for index, child in enumerate(node.children):
                 child_path = f"{path}.{index}" if path else str(index)
-                text = (f"{child.label} · {PortfolioBot._pct(child.weight_rub_pct)} · "
-                        f"{_money(child.value_rub, 'RUB')}")
+                value = ("" if blur_amounts else
+                         f" · {_money(child.value_rub, 'RUB')}")
+                text = f"{child.label} · {PortfolioBot._pct(child.weight_rub_pct)}{value}"
                 rows.append([InlineKeyboardButton(
                     text=text[:60], callback_data=f"pa:{token}:n:{child_path}"
                 )])
@@ -140,8 +246,9 @@ class PortfolioBot:
                 share = (value / report.total_rub
                          if value is not None and report.total_rub else None)
                 rows.append([InlineKeyboardButton(
-                    text=f"{pos.name} · {PortfolioBot._pct(share)} · "
-                         f"{_money(value, 'RUB')}"[:60],
+                    text=(f"{pos.name} · {PortfolioBot._pct(share)}" if blur_amounts else
+                          f"{pos.name} · {PortfolioBot._pct(share)} · "
+                          f"{_money(value, 'RUB')}")[:60],
                     callback_data=f"pa:{token}:p:{path}:{index}:{page}",
                 )])
             nav: list[InlineKeyboardButton] = []
@@ -171,9 +278,10 @@ class PortfolioBot:
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     @staticmethod
-    def _income_money(node: IncomeNode, metric: str) -> str:
+    def _income_money(node: IncomeNode, metric: str, blur_amounts: bool = False) -> str:
         totals = node.totals[metric]
-        return f"{_money(totals.rub, 'RUB')} / {_money(totals.usd, 'USD')}"
+        return (f"{_money(totals.rub, 'RUB', blur=blur_amounts)} / "
+                f"{_money(totals.usd, 'USD', blur=blur_amounts)}")
 
     @staticmethod
     def _income_share(value: Decimal, total: Decimal) -> str:
@@ -190,34 +298,37 @@ class PortfolioBot:
         )
 
     @staticmethod
-    def _income_position_money(position: IncomePosition, metric: str) -> str:
+    def _income_position_money(position: IncomePosition, metric: str,
+                               blur_amounts: bool = False) -> str:
         totals = position.totals[metric]
-        return f"{_money(totals.rub, 'RUB')} / {_money(totals.usd, 'USD')}"
+        return (f"{_money(totals.rub, 'RUB', blur=blur_amounts)} / "
+                f"{_money(totals.usd, 'USD', blur=blur_amounts)}")
 
     @staticmethod
     def _income_position_text(report: IncomeReport, position: IncomePosition,
-                              metric: str) -> str:
+                              metric: str, blur_amounts: bool = False) -> str:
         totals = position.totals[metric]
         return "\n".join([
             f"<b>{html.escape(position.name)}</b>",
             f"{html.escape(INCOME_METRIC_LABELS[metric])}",
             f"Счет: {html.escape(position.account_label)}",
             f"Инструмент: <code>{html.escape(position.instrument_id)}</code>",
-            f"Итого: {_money(totals.rub, 'RUB')} / {_money(totals.usd, 'USD')}",
+            f"Итого: {_money(totals.rub, 'RUB', blur=blur_amounts)} / "
+            f"{_money(totals.usd, 'USD', blur=blur_amounts)}",
             PortfolioBot._income_share_text(report, totals.rub, totals.usd, metric),
         ])
 
     @staticmethod
-    def _income_summary_text(report: IncomeReport) -> str:
+    def _income_summary_text(report: IncomeReport, blur_amounts: bool = False) -> str:
         year = report.as_of.year
         month = report.as_of.strftime("%m.%Y")
         lines = [
             "<b>Доходы портфеля</b>",
             f"На {_date(report.as_of)} · snapshot: {_date(report.snapshot_as_of)}",
             f"Факт с 01.01.{year}: "
-            f"{PortfolioBot._income_money(report.root, 'actual_ytd')}",
+            f"{PortfolioBot._income_money(report.root, 'actual_ytd', blur_amounts)}",
             f"Прогноз до 31.12.{year}: "
-            f"{PortfolioBot._income_money(report.root, 'forecast_year')}",
+            f"{PortfolioBot._income_money(report.root, 'forecast_year', blur_amounts)}",
             "Факт пересчитан по курсу на дату выплаты; прогноз — по текущему курсу.",
             "Суммы взяты из данных брокеров; отдельный налоговый пересчет не выполняется.",
             f"Для детализации выберите период (текущий месяц: {month}):",
@@ -229,11 +340,12 @@ class PortfolioBot:
         return "\n".join(lines)
 
     @staticmethod
-    def _income_node_text(report: IncomeReport, node: IncomeNode, metric: str) -> str:
+    def _income_node_text(report: IncomeReport, node: IncomeNode, metric: str,
+                          blur_amounts: bool = False) -> str:
         lines = [
             f"<b>{html.escape(INCOME_METRIC_LABELS[metric])}</b>",
             f"{html.escape(node.label)}",
-            f"Итого: {PortfolioBot._income_money(node, metric)}",
+            f"Итого: {PortfolioBot._income_money(node, metric, blur_amounts)}",
             PortfolioBot._income_share_text(
                 report, node.totals[metric].rub, node.totals[metric].usd, metric,
             ),
@@ -263,13 +375,15 @@ class PortfolioBot:
     @staticmethod
     def _income_tree_keyboard(
         token: str, node: IncomeNode, metric: str,
-        path: str = "", page: int = 0,
+        path: str = "", page: int = 0, blur_amounts: bool = False,
     ) -> InlineKeyboardMarkup:
         rows: list[list[InlineKeyboardButton]] = []
         if node.children:
             for index, child in enumerate(node.children):
                 child_path = f"{path}.{index}" if path else str(index)
-                text = f"{child.label} · {PortfolioBot._income_money(child, metric)}"
+                value = ("" if blur_amounts else
+                         f" · {PortfolioBot._income_money(child, metric)}")
+                text = f"{child.label}{value}"
                 rows.append([InlineKeyboardButton(
                     text=text[:60], callback_data=f"ir:{token}:n:{metric}:{child_path}"
                 )])
@@ -283,7 +397,9 @@ class PortfolioBot:
             end = min(start + page_size, len(positions))
             for index, position in positions[start:end]:
                 rows.append([InlineKeyboardButton(
-                    text=f"{position.name} · {PortfolioBot._income_position_money(position, metric)}"[:60],
+                    text=(f"{position.name}" if blur_amounts else
+                          f"{position.name} · "
+                          f"{PortfolioBot._income_position_money(position, metric)}")[:60],
                     callback_data=f"ir:{token}:i:{metric}:{path}:{index}",
                 )])
             nav: list[InlineKeyboardButton] = []
@@ -319,7 +435,7 @@ class PortfolioBot:
                 while len(self._income_views) > 64:
                     self._income_views.pop(next(iter(self._income_views)))
                 await message.edit_text(
-                    self._income_summary_text(report), parse_mode="HTML",
+                    self._income_summary_text(report, self.blur_amounts), parse_mode="HTML",
                     reply_markup=self._income_home_keyboard(token),
                 )
             else:
@@ -330,8 +446,10 @@ class PortfolioBot:
                 while len(self._allocation_views) > 64:
                     self._allocation_views.pop(next(iter(self._allocation_views)))
                 await message.edit_text(
-                    self._overview_text(report), parse_mode="HTML",
-                    reply_markup=self._allocation_keyboard(report, token, report.root),
+                    self._overview_text(report, self.blur_amounts), parse_mode="HTML",
+                    reply_markup=self._allocation_keyboard(
+                        report, token, report.root, blur_amounts=self.blur_amounts,
+                    ),
                 )
             snapshot = result.snapshot
             operation_counts = Counter(
@@ -375,17 +493,18 @@ class PortfolioBot:
                 self._refresh_tasks.pop(chat_id, None)
 
     @staticmethod
-    def _node_text(report: PortfolioAllocation, node: AllocationNode) -> str:
+    def _node_text(report: PortfolioAllocation, node: AllocationNode,
+                   blur_amounts: bool = False) -> str:
         lines = [f"<b>{html.escape(node.label)}</b>",
-                 f"RUB: {_money(node.value_rub, 'RUB')} · доля: "
+                 f"RUB: {_money(node.value_rub, 'RUB', blur=blur_amounts)} · доля: "
                  f"{PortfolioBot._pct(node.weight_rub_pct)}",
-                 f"USD: {_money(node.value_usd, 'USD')} · доля: "
+                 f"USD: {_money(node.value_usd, 'USD', blur=blur_amounts)} · доля: "
                  f"{PortfolioBot._pct(node.weight_usd_pct)}"]
         if node.target_pct is not None:
             lines.append(
                 f"Цель: {PortfolioBot._pct(node.target_pct)}; "
-                f"целевой объём: {_money(node.target_rub, 'RUB')} / "
-                f"{_money(node.target_usd, 'USD')}"
+                f"целевой объём: {_money(node.target_rub, 'RUB', blur=blur_amounts)} / "
+                f"{_money(node.target_usd, 'USD', blur=blur_amounts)}"
             )
             if node.deviation_rub_pct is not None:
                 deviation = [f"RUB {node.deviation_rub_pct * 100:+.2f} п.п."]
@@ -407,13 +526,13 @@ class PortfolioBot:
         return "\n".join(lines)
 
     @staticmethod
-    def _overview_text(report: PortfolioAllocation) -> str:
+    def _overview_text(report: PortfolioAllocation, blur_amounts: bool = False) -> str:
         total_label = "Итого" if report.complete else "Наблюдаемый NAV"
         lines = ["<b>Структура инвестиционного портфеля</b>",
                  f"На {_date(report.as_of)} · охват: "
                  f"{'полный' if report.complete else 'неполный'}",
-                 f"{total_label}: {_money(report.total_rub, 'RUB')} / "
-                 f"{_money(report.total_usd, 'USD')}"]
+                 f"{total_label}: {_money(report.total_rub, 'RUB', blur=blur_amounts)} / "
+                 f"{_money(report.total_usd, 'USD', blur=blur_amounts)}"]
         if not report.complete:
             lines.append(
                 "Доли — от наблюдаемого NAV; целевые суммы рассчитаны от него же, "
@@ -428,7 +547,8 @@ class PortfolioBot:
                 target += f" · отклонение {node.deviation_rub_pct * 100:+.2f} п.п."
             lines.append(
                 f"• <b>{html.escape(node.label)}</b>: "
-                f"{_money(node.value_rub, 'RUB')} / {_money(node.value_usd, 'USD')} · "
+                f"{_money(node.value_rub, 'RUB', blur=blur_amounts)} / "
+                f"{_money(node.value_usd, 'USD', blur=blur_amounts)} · "
                 f"доли {PortfolioBot._pct(node.weight_rub_pct)} / "
                 f"{PortfolioBot._pct(node.weight_usd_pct)}{target}"
             )
@@ -439,7 +559,8 @@ class PortfolioBot:
         return "\n".join(lines)
 
     @staticmethod
-    def _position_text(report: PortfolioAllocation, row: PositionRow) -> str:
+    def _position_text(report: PortfolioAllocation, row: PositionRow,
+                       blur_amounts: bool = False) -> str:
         p = row.valued.position
         weight_rub = (row.valued.value_rub / report.total_rub
                       if row.valued.value_rub is not None and report.total_rub else None)
@@ -452,9 +573,9 @@ class PortfolioBot:
             f"Владелец: {html.escape(row.account.owner_id)}",
             f"ID: <code>{html.escape(p.instrument_id)}</code>",
             f"Тип: {html.escape(p.kind)}; количество: {p.quantity_units}",
-            f"Стоимость: {_money(p.value_native, p.price_currency)}",
-            f"Оценка: {_money(row.valued.value_rub, 'RUB')} / "
-            f"{_money(row.valued.value_usd, 'USD')}",
+            f"Стоимость: {_money(p.value_native, p.price_currency, blur=blur_amounts)}",
+            f"Оценка: {_money(row.valued.value_rub, 'RUB', blur=blur_amounts)} / "
+            f"{_money(row.valued.value_usd, 'USD', blur=blur_amounts)}",
             f"Доля{' портфеля' if report.complete else ' наблюдаемого NAV'}: "
             f"{PortfolioBot._pct(weight_rub)} / "
             f"{PortfolioBot._pct(weight_usd)}",
@@ -482,6 +603,9 @@ class PortfolioBot:
                 "/portfolio — структура портфеля с drill-down",
                 "/performance — финансовый результат в RUB и USD",
                 "/income — доходы с начала года и прогноз",
+                *(["/classify — классифицировать новые инструменты"]
+                  if self.classification_enabled and message.from_user and
+                  message.from_user.id in self.classification_admin_ids else []),
                 f"Последний срез: {_date(snapshot.as_of if snapshot else None)}",
             ])
 
@@ -505,6 +629,30 @@ class PortfolioBot:
             except Exception as exc:
                 logger.exception("Refresh failed")
                 await message.answer(f"Синхронизация не завершена: {type(exc).__name__}. Подробности в логе.")
+                return
+            if (self.classification_enabled and message.from_user and
+                    message.from_user.id in self.classification_admin_ids):
+                try:
+                    report = await self.service.portfolio_allocation()
+                    candidates = self._unclassified_candidates(report) if report else []
+                    current = {(item.contour, item.instrument_id) for item in candidates}
+                    new = current - self._notified_unclassified
+                    self._notified_unclassified.intersection_update(current)
+                    if new:
+                        token = self._new_classification_session(candidates)
+                        await message.answer(
+                            f"Без классификации: {len(candidates)} инструментов, "
+                            f"из них новых: {len(new)}.",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                                InlineKeyboardButton(
+                                    text="Классифицировать",
+                                    callback_data=f"cl:{token}:l:0",
+                                ),
+                            ]]),
+                        )
+                        self._notified_unclassified.update(current)
+                except Exception:
+                    logger.exception("Classification reminder failed after refresh")
 
         @self.dispatcher.message(Command("portfolio", "portfolio_brief"))
         async def portfolio(message: Message) -> None:
@@ -521,12 +669,35 @@ class PortfolioBot:
                     self._allocation_views.pop(next(iter(self._allocation_views)))
                 root = report.root
                 await message.answer(
-                    self._overview_text(report), parse_mode="HTML",
-                    reply_markup=self._allocation_keyboard(report, token, root),
+                    self._overview_text(report, self.blur_amounts), parse_mode="HTML",
+                    reply_markup=self._allocation_keyboard(
+                        report, token, root, blur_amounts=self.blur_amounts,
+                    ),
                 )
             except Exception as exc:
                 logger.exception("Portfolio report failed")
                 await message.answer(f"Не удалось прочитать портфель: {type(exc).__name__}.")
+
+        @self.dispatcher.message(Command("classify"))
+        async def classify(message: Message) -> None:
+            if not await self._authorized(message):
+                return
+            if (not self.classification_enabled or not message.from_user or
+                    message.from_user.id not in self.classification_admin_ids):
+                await message.answer("Классификация недоступна в этом окружении.")
+                return
+            try:
+                report = await self.service.portfolio_allocation()
+                candidates = self._unclassified_candidates(report) if report else []
+                if not candidates:
+                    await message.answer("Неклассифицированных инструментов нет.")
+                    return
+                token = self._new_classification_session(candidates)
+                text, keyboard = self._classification_page(self._classification_views[token], token, 0)
+                await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+            except Exception as exc:
+                logger.exception("Classification list failed")
+                await message.answer(f"Не удалось открыть классификацию: {type(exc).__name__}.")
 
         @self.dispatcher.callback_query(lambda query: bool(
             query.data and query.data.startswith("pa:")
@@ -550,7 +721,7 @@ class PortfolioBot:
                     path, index_raw, page_raw = parts
                     node = self._node_at_path(report.root, path)
                     row = node.positions[int(index_raw)]
-                    text = self._position_text(report, row)
+                    text = self._position_text(report, row, self.blur_amounts)
                     keyboard = InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(
                             text="← К позициям",
@@ -563,6 +734,18 @@ class PortfolioBot:
                             text="Отчет по доходам", callback_data="ir:open"
                         )],
                     ])
+                    if (node.synthetic and self.classification_enabled and
+                            user_id in self.classification_admin_ids):
+                        candidate = ClassificationCandidate(
+                            row.account.contour, row.valued.position.instrument_id,
+                            row.valued.position.name, row.valued.position.kind,
+                            row.account.label or row.account.key,
+                        )
+                        class_token = self._new_classification_session([candidate])
+                        keyboard.inline_keyboard.insert(0, [InlineKeyboardButton(
+                            text="Классифицировать",
+                            callback_data=f"cl:{class_token}:n:0:-",
+                        )])
                 elif action == "r":
                     task = self._refresh_tasks.get(message.chat.id)
                     if task is not None and not task.done():
@@ -586,20 +769,24 @@ class PortfolioBot:
                     node = self._node_at_path(report.root, path)
                     page = int(page_raw)
                     page_count = max(1, (len(node.positions) + 7) // 8)
-                    text = (self._node_text(report, node) +
+                    text = (self._node_text(report, node, self.blur_amounts) +
                             f"\nСтраница {page + 1} из {page_count}.")
                     keyboard = self._allocation_keyboard(
-                        report, token, node, path, page
+                        report, token, node, path, page,
+                        blur_amounts=self.blur_amounts,
                     )
                 elif action == "n":
                     path = parts[0]
                     if path == "home":
                         node = report.root
-                        text = self._overview_text(report)
+                        text = self._overview_text(report, self.blur_amounts)
                     else:
                         node = self._node_at_path(report.root, path)
-                        text = self._node_text(report, node)
-                    keyboard = self._allocation_keyboard(report, token, node, "" if path == "home" else path)
+                        text = self._node_text(report, node, self.blur_amounts)
+                    keyboard = self._allocation_keyboard(
+                        report, token, node, "" if path == "home" else path,
+                        blur_amounts=self.blur_amounts,
+                    )
                 else:
                     raise ValueError("Unknown portfolio navigation action")
                 await message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
@@ -607,6 +794,66 @@ class PortfolioBot:
             except Exception as exc:
                 logger.exception("Portfolio drill-down failed")
                 await callback.answer("Не удалось открыть раздел.", show_alert=True)
+
+        @self.dispatcher.callback_query(lambda query: bool(
+            query.data and query.data.startswith("cl:")
+        ))
+        async def classification_callback(callback: CallbackQuery) -> None:
+            if (not self.classification_enabled or
+                    callback.from_user.id not in self.classification_admin_ids):
+                await callback.answer("Доступ запрещён.", show_alert=True)
+                return
+            message = callback.message
+            if message is None or not callback.data:
+                await callback.answer()
+                return
+            try:
+                _, token, action, *parts = callback.data.split(":")
+                session = self._classification_views.get(token)
+                if session is None:
+                    await callback.answer("Выбор устарел. Запустите /classify заново.", show_alert=True)
+                    return
+                if action == "l":
+                    text, keyboard = self._classification_page(session, token, int(parts[0]))
+                elif action == "n":
+                    text, keyboard, _node = self._classification_node(
+                        session, token, int(parts[0]), parts[1],
+                    )
+                elif action == "c":
+                    index, path = int(parts[0]), parts[1]
+                    candidate = session.candidates[index]
+                    _text, _keyboard, node = self._classification_node(
+                        session, token, index, path,
+                    )
+                    if node.children or node.synthetic:
+                        raise ValueError("Only IPS leaves can be classified")
+                    await self.service.classify_instrument(
+                        candidate.contour, candidate.instrument_id,
+                        node.bucket_id, callback.from_user.id,
+                    )
+                    session.candidates.pop(index)
+                    self._classification_views.pop(token, None)
+                    if session.candidates:
+                        token = self._new_classification_session(session.candidates)
+                        text, keyboard = self._classification_page(
+                            self._classification_views[token], token, 0,
+                        )
+                        text = (f"Назначен бакет <code>{html.escape(node.bucket_id)}</code>.\n"
+                                + text)
+                    else:
+                        text = (f"Назначен бакет <code>{html.escape(node.bucket_id)}</code>.\n"
+                                "Все инструменты в очереди классифицированы. "
+                                "Откройте /portfolio для обновлённой структуры.")
+                        keyboard = None
+                else:
+                    raise ValueError("Unknown classification action")
+                await message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+                await callback.answer()
+            except (ValueError, IndexError) as exc:
+                await callback.answer(str(exc)[:180], show_alert=True)
+            except Exception:
+                logger.exception("Classification failed")
+                await callback.answer("Классификация не сохранена. См. лог.", show_alert=True)
 
         @self.dispatcher.callback_query(lambda query: bool(
             query.data and query.data.startswith("ir:")
@@ -628,7 +875,7 @@ class PortfolioBot:
                     while len(self._income_views) > 64:
                         self._income_views.pop(next(iter(self._income_views)))
                     await message.edit_text(
-                        self._income_summary_text(report), parse_mode="HTML",
+                        self._income_summary_text(report, self.blur_amounts), parse_mode="HTML",
                         reply_markup=self._income_home_keyboard(token),
                     )
                     await callback.answer()
@@ -665,34 +912,45 @@ class PortfolioBot:
                     while len(self._allocation_views) > 64:
                         self._allocation_views.pop(next(iter(self._allocation_views)))
                     await message.edit_text(
-                        self._overview_text(portfolio), parse_mode="HTML",
-                        reply_markup=self._allocation_keyboard(portfolio, new_token, portfolio.root),
+                        self._overview_text(portfolio, self.blur_amounts), parse_mode="HTML",
+                        reply_markup=self._allocation_keyboard(
+                            portfolio, new_token, portfolio.root,
+                            blur_amounts=self.blur_amounts,
+                        ),
                     )
                     await callback.answer()
                     return
                 if action == "home":
-                    text = self._income_summary_text(report)
+                    text = self._income_summary_text(report, self.blur_amounts)
                     keyboard = self._income_home_keyboard(token)
                 elif action == "m":
                     metric = parts[0]
                     node = report.root
-                    text = self._income_node_text(report, node, metric)
-                    keyboard = self._income_tree_keyboard(token, node, metric)
+                    text = self._income_node_text(report, node, metric, self.blur_amounts)
+                    keyboard = self._income_tree_keyboard(
+                        token, node, metric, blur_amounts=self.blur_amounts,
+                    )
                 elif action == "n":
                     metric, path = parts
                     node = self._income_node_at_path(report.root, path)
-                    text = self._income_node_text(report, node, metric)
-                    keyboard = self._income_tree_keyboard(token, node, metric, path)
+                    text = self._income_node_text(report, node, metric, self.blur_amounts)
+                    keyboard = self._income_tree_keyboard(
+                        token, node, metric, path, blur_amounts=self.blur_amounts,
+                    )
                 elif action == "l":
                     metric, path, page = parts
                     node = self._income_node_at_path(report.root, path)
-                    text = self._income_node_text(report, node, metric)
-                    keyboard = self._income_tree_keyboard(token, node, metric, path, int(page))
+                    text = self._income_node_text(report, node, metric, self.blur_amounts)
+                    keyboard = self._income_tree_keyboard(
+                        token, node, metric, path, int(page), self.blur_amounts,
+                    )
                 elif action == "i":
                     metric, path, index = parts
                     node = self._income_node_at_path(report.root, path)
                     position = node.positions[int(index)]
-                    text = self._income_position_text(report, position, metric)
+                    text = self._income_position_text(
+                        report, position, metric, self.blur_amounts,
+                    )
                     rows = [[InlineKeyboardButton(
                         text="← К бумагам бакета",
                         callback_data=f"ir:{token}:n:{metric}:{path}",
@@ -734,10 +992,11 @@ class PortfolioBot:
                             continue
                         ccy = estimate.currency
                         lines.extend([
-                            f"{ccy}: {_money(estimate.start_nav, ccy)} → "
-                            f"{_money(estimate.end_nav, ccy)}",
-                            f"Внешний поток: {_money(estimate.net_external_flow, ccy)}; "
-                            f"результат: {_money(estimate.pnl, ccy)}",
+                            f"{ccy}: {_money(estimate.start_nav, ccy, blur=self.blur_amounts)} → "
+                            f"{_money(estimate.end_nav, ccy, blur=self.blur_amounts)}",
+                            f"Внешний поток: "
+                            f"{_money(estimate.net_external_flow, ccy, blur=self.blur_amounts)}; "
+                            f"результат: {_money(estimate.pnl, ccy, blur=self.blur_amounts)}",
                             f"Modified Dietz: {_money(estimate.modified_dietz_pct, '%')}; "
                             f"XIRR: {_money(estimate.xirr_pct, '%')}",
                         ])
@@ -762,7 +1021,7 @@ class PortfolioBot:
             while len(self._income_views) > 64:
                 self._income_views.pop(next(iter(self._income_views)))
             await message.answer(
-                self._income_summary_text(report), parse_mode="HTML",
+                self._income_summary_text(report, self.blur_amounts), parse_mode="HTML",
                 reply_markup=self._income_home_keyboard(token),
             )
 

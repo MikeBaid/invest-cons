@@ -96,7 +96,7 @@ async def _apply(rows: list[dict[str, str]]) -> int:
     store = await Store.connect(dsn)
     try:
         await store.initialize()
-        return await store.set_active_classifications(rows)
+        return await store.set_active_classifications(rows, preserve_manual=True)
     finally:
         await store.close()
 

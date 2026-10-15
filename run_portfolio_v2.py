@@ -38,10 +38,24 @@ def _list(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean")
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Isolated portfolio V2 bot")
     parser.add_argument("--refresh-once", action="store_true",
                         help="Synchronize once without starting Telegram polling")
+    parser.add_argument("--disable-scheduler", action="store_true",
+                        help="Start the bot without its scheduled refresh")
     args = parser.parse_args()
     load_dotenv(ROOT / ".env", override=False)
     try_configure_tinvest_grpc_ssl_roots(
@@ -61,6 +75,14 @@ async def main() -> None:
         raise ValueError("DATABASE_URL is required")
     token = os.getenv("PORTFOLIO_V2_TELEGRAM_TOKEN", "").strip()
     allowed = {int(value) for value in _list(os.getenv("PORTFOLIO_V2_TELEGRAM_IDS", ""))}
+    classification_enabled = _env_bool("PORTFOLIO_V2_CLASSIFICATION_ENABLED")
+    classification_admin_ids = {
+        int(value) for value in _list(os.getenv("PORTFOLIO_V2_CLASSIFICATION_ADMIN_IDS", ""))
+    }
+    if classification_enabled and not classification_admin_ids:
+        raise ValueError("PORTFOLIO_V2_CLASSIFICATION_ADMIN_IDS is required when classification is enabled")
+    if classification_enabled and not classification_admin_ids <= allowed:
+        raise ValueError("Classification admins must be in PORTFOLIO_V2_TELEGRAM_IDS")
     if not args.refresh_once and (not token or not allowed):
         raise ValueError("PORTFOLIO_V2_TELEGRAM_TOKEN and PORTFOLIO_V2_TELEGRAM_IDS are required")
     runtime = RuntimeConfig.load(ROOT / "config/runtime.yaml")
@@ -104,11 +126,17 @@ async def main() -> None:
             ):
                 raise SystemExit(2)
         else:
+            scheduler_enabled = schedule.enabled and not args.disable_scheduler
             scheduler_task = asyncio.create_task(
                 run_daily_refresh(service, schedule), name="daily-portfolio-refresh"
-            ) if schedule.enabled else None
+            ) if scheduler_enabled else None
             try:
-                await PortfolioBot(token, allowed, service).run()
+                await PortfolioBot(
+                    token, allowed, service,
+                    blur_amounts=_env_bool("PORTFOLIO_V2_BLUR_AMOUNTS"),
+                    classification_enabled=classification_enabled,
+                    classification_admin_ids=classification_admin_ids,
+                ).run()
             finally:
                 if scheduler_task is not None:
                     scheduler_task.cancel()

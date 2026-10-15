@@ -354,18 +354,28 @@ class Store:
             "reason": row["reason"],
         } for row in rows}
 
-    async def set_active_classifications(self, rows: list[dict[str, str]]) -> int:
+    async def set_active_classifications(self, rows: list[dict[str, str]],
+                                         *, preserve_manual: bool = False) -> int:
         """Version confirmed instrument assignments; identical active rows are idempotent."""
         changed = 0
         async with self.pool.acquire() as connection:
             async with connection.transaction():
                 for row in rows:
+                    await connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                        f"{row['contour']}:{row['instrument_id']}",
+                    )
                     current = await connection.fetchrow(
-                        "SELECT bucket_id,classification_version FROM "
+                        "SELECT bucket_id,classification_version,source FROM "
                         "portfolio_v2.classification_history "
                         "WHERE contour=$1 AND instrument_id=$2 AND valid_to IS NULL FOR UPDATE",
                         row["contour"], row["instrument_id"],
                     )
+                    if ("expected_bucket_id" in row and
+                            (current["bucket_id"] if current else None) != row["expected_bucket_id"]):
+                        raise ValueError("Classification changed; reopen the report")
+                    if preserve_manual and current and current["source"] == "telegram_manual":
+                        continue
                     if current and (current["bucket_id"], current["classification_version"]) == (
                         row["bucket_id"], row["classification_version"]
                     ):
